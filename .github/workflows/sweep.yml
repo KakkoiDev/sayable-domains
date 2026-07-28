@@ -1,0 +1,234 @@
+name: Sweep
+
+# A long-running search, assembled from bounded slices.
+#
+# Hosted Actions jobs are terminated at 6 hours and the termination is a
+# *failure*, so one long job would silently lose everything unsaved. Instead
+# each run checks for up to 5 hours, saves, and — if the queue is not empty —
+# dispatches itself again. That chains into an effectively unbounded sweep made
+# of individually safe pieces.
+#
+# Self-dispatch works with the default GITHUB_TOKEN: workflow_dispatch and
+# repository_dispatch are explicit exceptions to the recursion guard (GitHub
+# changed this in September 2022). It needs `actions: write`, below. No PAT.
+#
+# Sizing, roughly:
+#   ~117k candidates, ~30% survive DNS  =>  ~35k registry calls
+#   at 2 req/s that is ~4.9 hours       =>  a first full sweep is about 1 slice
+#   after that the queue is mostly re-verification of results past 21 days
+#
+# 5 hours at 2 req/s is 36,000 requests in one continuous session from one IP.
+# That is a lot to ask of a registry. If you start seeing 429s, drop rdap_rps
+# to 1 before you shorten the slice — a slow sweep finishes, a banned one does
+# not.
+
+on:
+  schedule:
+    - cron: "23 3 * * *"       # daily; the chain handles the rest
+  workflow_dispatch:
+    inputs:
+      duration:
+        description: "Checking time per slice: 5m, 90m, 5h. Max 5h."
+        default: "5h"
+      rdap_rps:
+        description: "Registry requests per second"
+        default: "2"
+      stage:
+        description: "zone | dns | rdap | registrar"
+        default: "rdap"
+      recheck_older_than:
+        description: "Also re-verify results older than N days"
+        default: "21"
+      chain_remaining:
+        description: "Safety cap on how many more slices may chain"
+        default: "12"
+
+permissions:
+  contents: write
+  pages: write
+  id-token: write
+  issues: write
+  actions: write             # required to dispatch the next slice
+
+# Two slices at once would double the real request rate. The CLI's lock file is
+# per-machine and cannot see another runner, so this is the only thing that
+# stops it — including stopping a chained run from overlapping its parent.
+concurrency:
+  group: sayable-sweep
+  cancel-in-progress: false
+
+jobs:
+  sweep:
+    runs-on: ubuntu-latest
+    # 5h50m: above the 5h budget below, under the 6h hard kill. The CLI always
+    # stops itself first, so this is a backstop, not the mechanism.
+    timeout-minutes: 350
+
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # Validated with the CLI's own duration parser rather than a second
+      # implementation in shell, so "5m" and "1h30m" mean the same thing here
+      # as they do in --max-duration.
+      - name: Validate the slice length
+        id: cfg
+        run: |
+          python3 - <<'PY'
+          import os, sys
+          from pdgen.plan import parse_duration, human
+          raw = os.environ["SLICE"]
+          try:
+              secs = parse_duration(raw)
+          except ValueError as e:
+              sys.exit(f"::error::{e}")
+          if not 0 < secs <= 5 * 3600:
+              sys.exit(f"::error::slice must be >0 and <=5h, got {human(secs)}. "
+                       "Guessing near the 6h job wall is how you lose a run.")
+          with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
+              fh.write(f"duration={raw}\nseconds={int(secs)}\n")
+              fh.write(f"chain={os.environ['CHAIN']}\n")
+          print(f"  slice: {human(secs)}")
+          PY
+        env:
+          SLICE: ${{ inputs.duration || '5h' }}
+          CHAIN: ${{ inputs.chain_remaining || '12' }}
+
+      - name: Pull the database from the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m pdgen release pull || echo "No release yet — starting fresh."
+
+      - name: Generate any missing candidates
+        run: python3 -m pdgen generate --min-score 85
+
+      - name: Plan
+        run: |
+          python3 -m pdgen plan --include-stale \
+            --rdap-rps "${{ inputs.rdap_rps || '2' }}" \
+            --budget "${{ steps.cfg.outputs.duration }}"
+
+      - name: Check a slice, best candidates first
+        id: check
+        run: |
+          python3 -m pdgen check \
+            --stage "${{ inputs.stage || 'rdap' }}" \
+            --max-duration "${{ steps.cfg.outputs.duration }}" \
+            --recheck-older-than "${{ inputs.recheck_older_than || '21' }}" \
+            --rdap-rps "${{ inputs.rdap_rps || '2' }}" \
+            --workers 8
+
+      # Everything below runs even if the check failed or was cancelled.
+      # Losing five hours of registry calls to a broken later step would be the
+      # worst failure mode this project has.
+      - name: Push the database back to the release
+        if: always()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: python3 -m pdgen release push
+
+      - name: Stats
+        if: always()
+        run: python3 -m pdgen stats
+
+      - name: Build the dictionary and publish
+        if: always()
+        run: |
+          python3 -m pdgen dictionary build
+          python3 -m pdgen publish --min-confidence rdap --fail-on-demo
+
+      - name: Commit the snapshot
+        if: always()
+        run: |
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Also resets the 60-day inactivity timer that silently disables
+          # scheduled workflows — a slice that finds nothing new would
+          # otherwise produce no commit at all.
+          date -u +%FT%TZ > .github/last-sweep
+          git add docs/data/domains.json .github/last-sweep
+          git diff --staged --quiet || git commit -qm "sweep: refresh snapshot [skip ci]"
+          git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
+          git push
+
+      - uses: actions/upload-pages-artifact@v3
+        if: always()
+        with:
+          path: docs
+
+      # Chain only when the previous slice actually succeeded. Chaining after a
+      # failure could spin on a broken state and burn the whole budget.
+      - name: Chain the next slice
+        if: >
+          success() &&
+          steps.check.outputs.complete == 'false' &&
+          steps.cfg.outputs.chain > 0
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          NEXT=$(( ${{ steps.cfg.outputs.chain }} - 1 ))
+          echo "${{ steps.check.outputs.remaining }} names still queued;" \
+               "dispatching another slice ($NEXT chained runs left after this)."
+          gh workflow run sweep.yml \
+            -f duration="${{ steps.cfg.outputs.duration }}" \
+            -f rdap_rps="${{ inputs.rdap_rps || '2' }}" \
+            -f stage="${{ inputs.stage || 'rdap' }}" \
+            -f recheck_older_than="${{ inputs.recheck_older_than || '21' }}" \
+            -f chain_remaining="$NEXT"
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "### Sweep"
+            echo ""
+            echo "| | |"
+            echo "|---|---|"
+            echo "| Checked this slice | ${{ steps.check.outputs.checked || '0' }} |"
+            echo "| Available found | ${{ steps.check.outputs.available || '0' }} |"
+            echo "| Still queued | ${{ steps.check.outputs.remaining || 'unknown' }} |"
+            echo "| Queue complete | ${{ steps.check.outputs.complete || 'unknown' }} |"
+            echo "| Slice length | ${{ steps.cfg.outputs.duration }} |"
+            echo "| Chained runs left | ${{ steps.cfg.outputs.chain }} |"
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      # GitHub does not email you when a *scheduled* run fails, so a broken
+      # sweep would be silent until you happened to look.
+      - name: Open an issue if the sweep failed
+        if: failure()
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          OPEN=$(gh issue list --label sweep-failure --state open --json number --jq 'length')
+          [ "$OPEN" = "0" ] || exit 0
+          gh issue create --label sweep-failure \
+            --title "Sweep failed on $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          The chain stops on failure by design, so no further slices will run
+          until this is resolved.
+
+          Likely causes, most common first:
+          - The registry started returning 429. Lower rdap_rps to 1.
+          - The release asset is missing or corrupt (pdgen release status).
+          - The snapshot still contains demo data (--fail-on-demo fired).
+
+          Close this issue once fixed, then re-run the workflow manually."
+
+  deploy:
+    needs: sweep
+    if: always()
+    runs-on: ubuntu-latest
+    # Shared with pages.yml. Two Pages deployments at once is an error, and the
+    # sweep's snapshot commit can land while a push-triggered deploy is running.
+    concurrency:
+      group: pages-deploy
+      cancel-in-progress: false
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - id: deploy
+        uses: actions/deploy-pages@v4

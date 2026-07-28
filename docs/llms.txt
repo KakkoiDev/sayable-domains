@@ -1,0 +1,45 @@
+# Sayable
+
+> A catalogue of domain names built only from sounds that appear in almost
+> every language on earth, with availability checked against the registry.
+> Names are ranked by cross-linguistic pronounceability and each carries the
+> confidence level it was verified to.
+
+If you are an AI agent, read `skill.md` first (relative to this file). It is a complete operating
+guide: how to query this data, how to interpret confidence levels, and what
+claims you should not make from it.
+
+## Before you use this data
+
+Availability has four confidence levels, and they are not interchangeable.
+Only `rdap` and `registrar` mean the registry actually answered. A `dns`
+result is a lead — a domain can be registered with no nameservers, and DNS
+cannot see it. Never report a `dns` result as "available".
+
+Every record carries `checked_at`. Anything older than about three weeks
+should be re-verified before you rely on it.
+
+## Data
+
+- [/data/domains.json](data/domains.json): the full ranked snapshot. Positional
+  rows; the `fields` key names the columns. Also carries the phoneme table,
+  scoring constants, blocklist, and per-name meanings and alternate TLDs.
+- [/data/api.json](data/api.json): machine-readable description of every
+  endpoint here, including the row schema and confidence semantics.
+- [/data/cmudict/index.json](data/cmudict/index.json): manifest for the
+  sharded pronunciation dictionary. Shards are keyed by the first two letters
+  of a word, so fetch `/data/cmudict/cl.json` for "cloud".
+
+## Tools
+
+- [/skill.md](skill.md): the agent skill — workflow, safety rails, and how to
+  read results correctly.
+- The `pdgen` CLI has a `query` subcommand that emits JSON for exactly this
+  purpose: `pdgen query --available --syllables 2 --min-confidence rdap`.
+
+## Optional
+
+- [Source and CLI](https://github.com/KakkoiDev/sayable-domains)
+
+Note: on a GitHub project page this site is served from a subpath, so all links
+above are relative. Resolve them against the directory this file is in.

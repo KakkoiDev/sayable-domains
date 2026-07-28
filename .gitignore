@@ -1,0 +1,20 @@
+__pycache__/
+*.pyc
+*.tmp
+.DS_Store
+
+# The working database lives in a GitHub release, not in git.
+#   pdgen release push   /   pdgen release pull
+db.json
+db.json.bak
+.db.json.lock
+db.json.gz
+
+# The published snapshot IS committed -- GitHub Pages has to serve it, and
+# release assets cannot be fetched cross-origin. See HANDOFF.md.
+!docs/data/domains.json
+
+# 468 small shards, ~3.7 MB, derived from CMUdict. CI rebuilds them into the
+# Pages artifact on every deploy, so they are served without ever entering git.
+# For a local preview: python3 -m pdgen dictionary build
+docs/data/cmudict/

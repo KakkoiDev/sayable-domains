@@ -1,0 +1,16 @@
+{
+  "_comment": "Type-checks docs/*.js via JSDoc. Emits nothing: the site is served as raw files with no build step.",
+  "compilerOptions": {
+    "target": "ES2022",
+    "module": "ES2022",
+    "moduleResolution": "bundler",
+    "lib": ["ES2022", "DOM", "DOM.Iterable"],
+    "allowJs": true,
+    "checkJs": true,
+    "noEmit": true,
+    "strict": false,
+    "noImplicitThis": true,
+    "skipLibCheck": true
+  },
+  "include": ["docs/*.js"]
+}

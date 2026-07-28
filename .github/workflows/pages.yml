@@ -1,0 +1,47 @@
+name: Pages
+
+# The sweep also deploys, but it only runs on a schedule or a manual dispatch.
+# Without this, a change to docs/ would not reach the site until the next slice,
+# and a fresh repo would serve nothing at all until someone ran the sweep.
+
+on:
+  push:
+    branches: [main]
+    paths:
+      - "docs/**"
+      - ".github/workflows/pages.yml"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  pages: write
+  id-token: write
+
+# Shared with the sweep's deploy job: two Pages deployments at once is an error.
+concurrency:
+  group: pages-deploy
+  cancel-in-progress: false
+
+jobs:
+  deploy:
+    runs-on: ubuntu-latest
+    environment:
+      name: github-pages
+      url: ${{ steps.deploy.outputs.page_url }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      # The 468 shards are gitignored, so they exist only inside the artifact.
+      # Skipping this ships a site whose Dictionary toggle is permanently dead.
+      - name: Build the dictionary
+        run: python3 -m pdgen dictionary build
+
+      - uses: actions/upload-pages-artifact@v3
+        with:
+          path: docs
+
+      - id: deploy
+        uses: actions/deploy-pages@v4

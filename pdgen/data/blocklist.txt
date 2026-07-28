@@ -1,0 +1,100 @@
+# Starter blocklist. One term per line; non a-z characters are stripped and
+# terms shorter than 3 characters are ignored. Matching is substring-based.
+#
+# This list only needs to cover strings reachable from the safe alphabet
+# (b d f k l m n p s t + a e i o u). It is NOT sufficient on its own.
+# Add a full multilingual list with:
+#   pdgen screen --blocklist path/to/en.txt --blocklist path/to/es.txt
+# Source: github.com/LDNOOBW/List-of-Dirty-Naughty-Obscene-and-Otherwise-Bad-Words
+
+# --- anatomy / explicit (en) ---
+anal
+anus
+boob
+dildo
+labia
+nipple
+penis
+pube
+pubes
+slut
+teat
+tits
+titi
+kunt
+kok
+kock
+dik
+dick
+pron
+porn
+lolita
+loli
+
+# --- scatological (en) ---
+piss
+poop
+poo
+puke
+kaka
+poopoo
+fart
+
+# --- slurs / hate markers (fragments) ---
+kkk
+nazi
+paki
+spik
+kike
+tard
+
+# --- drugs ---
+meth
+opium
+kilo
+
+# --- romance languages (es / pt / it) ---
+puta
+puto
+pute
+putas
+puti
+pene
+tetas
+teta
+polla
+pito
+pipi
+popo
+caka
+kaga
+pedo
+mierd
+merda
+bunda
+kona
+pinto
+
+# --- german / dutch / nordic ---
+kotze
+pisse
+kut
+lul
+poep
+fitte
+kuk
+pikk
+mutt
+
+# --- other ---
+bakla
+puki
+puke
+memek
+titit
+kontol
+pepek
+buto
+pundai
+sunni
+bosda

@@ -1,0 +1,42 @@
+name: Checks
+
+on: [push, pull_request]
+
+jobs:
+  types:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+      # The site has no build step. tsc only type-checks the JSDoc annotations
+      # and emits nothing, so docs/ stays raw servable files.
+      #
+      # --package= is required: `npx typescript@5 tsc` reads typescript@5 as the
+      # command, and the package ships two bins (tsc, tsserver) so npx will not
+      # pick one. Without it: "could not determine executable to run".
+      - run: npx --yes --package=typescript@5 -- tsc --noEmit -p tsconfig.json
+
+  python:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - run: python3 -m compileall -q pdgen tools tests
+      - name: Parser tests
+        run: python3 -m unittest discover tests -v
+      # Proves resume-across-slices, which the sweep chain depends on and
+      # which no CI run of the sweep itself would catch: a chain that fails to
+      # fire looks exactly like a completed queue.
+      - name: Rehearse the sweep chain
+        run: python3 tools/rehearse_chain.py --slice 1s --slices 8 --names 1500 --latency 0.012
+
+      - name: Smoke test the offline pipeline
+        run: |
+          python3 -m pdgen generate --pattern CVCV --min-score 85
+          python3 -m pdgen plan
+          python3 -m pdgen publish --min-confidence generated --include-taken
+          python3 -m pdgen score midako

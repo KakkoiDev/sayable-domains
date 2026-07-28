@@ -1,0 +1,178 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Sayable — .com names anyone can pronounce</title>
+<meta name="description" content="A ranked catalogue of available .com domains built only from sounds that appear in almost every language on earth.">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="styles.css">
+<!-- Agent discovery: an AI pointed at this URL can find the operating guide
+     and the machine-readable schema without being told where to look. -->
+<link rel="alternate" type="text/markdown" href="skill.md" title="Agent skill">
+<link rel="alternate" type="text/plain" href="llms.txt" title="llms.txt">
+<link rel="alternate" type="application/json" href="data/api.json" title="API description">
+<meta name="ai-agent-guide" content="skill.md">
+</head>
+<body>
+
+<header class="masthead">
+  <div class="wordmark">Sayable</div>
+  <div class="masthead-meta" id="masthead-meta">
+    <span data-slot="count">—</span>
+    <span class="sep"></span>
+    <span data-slot="date">loading</span>
+  </div>
+</header>
+
+<main>
+
+  <section class="hero">
+    <p class="eyebrow">Ten consonants. Five vowels. No consonant clusters.</p>
+    <h1>Names anyone<br>can say.</h1>
+    <p class="lede">
+      Every name here is built only from sounds that appear in almost every
+      language, spelled so that a reader in Osaka, Lagos, Bogotá and Berlin
+      arrives at the same pronunciation.
+    </p>
+
+    <div class="searchbar">
+      <label class="visually-hidden" for="q">Search names</label>
+      <input id="q" type="search" autocomplete="off" spellcheck="false"
+             placeholder="Search names — try ka, ^mi, or do$">
+      <kbd>/</kbd>
+    </div>
+    <p class="search-hint">
+      <code>^mi</code> starts with · <code>do$</code> ends with · anything else matches anywhere
+    </p>
+  </section>
+
+  <section class="shuffle-section" aria-label="Suggestions">
+    <div class="section-head">
+      <h2>Six you could buy right now</h2>
+      <button class="btn btn-quiet" id="btn-shuffle">Show me six more</button>
+    </div>
+    <p class="section-note" id="shuffle-note"></p>
+    <div class="picks" id="shuffle" role="list"></div>
+  </section>
+
+  <section class="coin-section" id="coin-section" aria-label="Coin a name">
+    <div class="section-head">
+      <h2>Coin one from English</h2>
+    </div>
+    <p class="section-note">
+      Japanese borrows English by forcing it into open syllables and clipping the
+      result — <span class="mono">personal computer</span> becomes
+      <span class="mono">pasokon</span>. Same machinery here, then a second pass
+      into the universal alphabet. Type a word or two.
+      <br><strong>Dictionary</strong> uses real pronunciations, which is more accurate
+      but less Japanese-faithful: it gives <span class="mono">pasikan</span> where
+      spelling gives <span class="mono">pasokon</span>. Try both.
+    </p>
+    <div class="coin-bar">
+      <label class="visually-hidden" for="coin-input">English words</label>
+      <input id="coin-input" type="text" autocomplete="off" spellcheck="false"
+             placeholder="cloud native · smart phone · river stone">
+      <button class="btn" id="btn-coin">Coin</button>
+      <button class="chip is-on" id="coin-dict"
+              title="Use real pronunciations instead of guessing from spelling">Dictionary</button>
+      <button class="chip is-on" id="coin-allvowels"
+              title="Japanese defaults to /u/ (and /o/ after t, d). This also tries a, e, i, o, u.">All vowels</button>
+      <button class="btn btn-quiet" id="btn-coincheck" disabled>Check all</button>
+    </div>
+    <p class="section-note" id="coin-meta"></p>
+    <div class="coin-list" id="coin-results" role="list"></div>
+  </section>
+
+  <section class="notice" id="notice" hidden></section>
+
+  <section class="controls" aria-label="Filters">
+    <div class="control">
+      <span class="control-label">Syllables</span>
+      <div class="chips" id="f-syllables" role="group"></div>
+    </div>
+    <div class="control">
+      <span class="control-label">Letters</span>
+      <div class="chips" id="f-length" role="group"></div>
+    </div>
+    <div class="control">
+      <span class="control-label">Tier</span>
+      <div class="chips" id="f-tier" role="group"></div>
+    </div>
+    <div class="control">
+      <span class="control-label">Only show</span>
+      <div class="chips" id="f-show" role="group">
+        <button class="chip" data-show="dropping" title="Registered now, but returning to the pool">Dropping soon</button>
+        <button class="chip" data-show="meaning" title="Already a word in another language">Already a word</button>
+        <button class="chip" data-show="bookmarked" title="Only names you saved">Bookmarked</button>
+      </div>
+    </div>
+    <div class="control">
+      <span class="control-label">Verified at least to</span>
+      <div class="chips" id="f-confidence" role="group"></div>
+    </div>
+    <div class="control control-end">
+      <span class="control-label">Sort</span>
+      <div class="chips" id="f-sort" role="group">
+        <button class="chip is-on" data-sort="score">Score</button>
+        <button class="chip" data-sort="alpha">A–Z</button>
+        <button class="chip" data-sort="length">Shortest</button>
+        <button class="chip" data-sort="checked">Freshest</button>
+      </div>
+    </div>
+  </section>
+
+  <section class="resultbar">
+    <p class="resultcount" id="resultcount">—</p>
+    <p class="harvest" id="harvest-count">nothing harvested yet</p>
+    <div class="resultactions">
+      <button class="btn" id="btn-fullcheck">Full check these names</button>
+      <button class="btn btn-quiet" id="btn-export" disabled>Export harvest</button>
+      <button class="btn btn-quiet" id="btn-export-csv" disabled>Bookmarks CSV</button>
+      <button class="btn btn-quiet" id="btn-reset">Clear filters</button>
+    </div>
+  </section>
+
+  <div class="progress" id="progress" hidden>
+    <div class="progress-track"><div class="progress-fill" id="progress-fill"></div></div>
+    <p class="progress-text" id="progress-text"></p>
+    <button class="btn btn-quiet" id="btn-cancel">Stop</button>
+  </div>
+
+  <section class="table" id="table">
+    <div class="thead" aria-hidden="true">
+      <span>Rank</span><span>Tier / name</span><span>Sounds</span>
+      <span>Score</span><span>Verified</span><span></span>
+    </div>
+    <div id="rows" role="list"></div>
+    <div id="sentinel" class="sentinel"></div>
+    <p class="empty" id="empty" hidden></p>
+  </section>
+
+</main>
+
+<footer class="foot">
+  <div>
+    <strong>Sayable</strong> — the ranking is a hypothesis about pronounceability,
+    not a fact. Say a shortlist out loud to native speakers before you buy.
+  </div>
+  <div class="foot-cmd">
+    Everything you check or bookmark here is cached in this browser.
+    <strong>Export harvest</strong> writes a patch for
+    <code>pdgen merge</code>, so web exploration becomes reusable data.
+  </div>
+</footer>
+
+<aside class="panel" id="panel" hidden aria-live="polite">
+  <div class="panel-inner">
+    <button class="panel-close" id="panel-close" aria-label="Close">Close</button>
+    <div id="panel-body"></div>
+  </div>
+</aside>
+<div class="scrim" id="scrim" hidden></div>
+
+<script type="module" src="app.js"></script>
+</body>
+</html>

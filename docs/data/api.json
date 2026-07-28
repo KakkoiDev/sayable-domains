@@ -1,0 +1,95 @@
+{
+ "name": "sayable",
+ "description": "Ranked, availability-checked domain names built from cross-linguistically pronounceable sounds.",
+ "agent_guide": "skill.md",
+ "paths_are": "relative to this file's directory's parent (the site root)",
+ "endpoints": {
+  "data/domains.json": {
+   "description": "Full ranked snapshot.",
+   "format": "positional rows; see `fields` for column order",
+   "fields": [
+    "name",
+    "score",
+    "tier",
+    "syllables",
+    "length",
+    "confidence",
+    "status",
+    "checked_at",
+    "flags",
+    "modifiers",
+    "meanings",
+    "alternates"
+   ],
+   "row_example": [
+    "kaima",
+    99.0,
+    "S",
+    2,
+    5,
+    0,
+    0,
+    "",
+    [],
+    [
+     [
+      "vowel variety",
+      3.0
+     ],
+     [
+      "consonant variety",
+      3.0
+     ],
+     [
+      "short (5 letters)",
+      3
+     ]
+    ],
+    [],
+    {}
+   ],
+   "keys": {
+    "rows": "the data",
+    "fields": "column names, in order",
+    "phonemes": "per-letter universality weight, IPA and a note",
+    "scoring": "constants for re-deriving a score, plus fixtures",
+    "blocklist": "obscenity substrings, same list the CLI uses",
+    "db_stats": "counts by tier, status and confidence",
+    "generated_at": "when this snapshot was taken",
+    "demo": "true means seeded fake data -- do not trust it"
+   }
+  },
+  "data/cmudict/index.json": {
+   "description": "Manifest for the sharded pronunciation dictionary.",
+   "shard_url": "data/cmudict/{first two letters}.json",
+   "shard_format": "{word: phoneme string}",
+   "note": "Absent unless `pdgen dictionary build` has run."
+  },
+  "skill.md": {
+   "description": "Agent operating guide.",
+   "format": "markdown"
+  },
+  "llms.txt": {
+   "description": "Human-readable orientation for agents."
+  }
+ },
+ "confidence_levels": {
+  "generated": "scored only, never checked -- says nothing about availability",
+  "dns": "absent from the zone; MISSES registered-but-undelegated names. A lead.",
+  "rdap": "the registry itself answered. Trustworthy.",
+  "registrar": "a registrar confirmed purchasability and price. Authoritative."
+ },
+ "cautions": [
+  "Never report a 'dns' result as available.",
+  "Check `checked_at`; results older than ~21 days are stale.",
+  "`demo: true` means the snapshot is seeded fake data.",
+  "The score is a hypothesis about pronounceability, never validated on speakers.",
+  "Availability is not trademark clearance."
+ ],
+ "snapshot": {
+  "generated_at": "2026-07-28T01:03:59+00:00",
+  "tld": "com",
+  "published": 5000,
+  "demo": false
+ }
+}
