@@ -267,6 +267,14 @@ This lives only in the browser. There is deliberately no `pdgen coin`: coining
 is interactive and low-volume, so a second implementation would only drift.
 Results travel back through the export/merge loop.
 
+**Bookmarking a coinage promotes it into the catalogue below**, tagged
+`coined` and rebuilt from local storage on every load, so it is there under
+the **Bookmarked** filter tomorrow as well as today. It is yours, not the
+snapshot's: it is kept out of the hero shuffle, counted separately in the
+result line, and starts at `generated` confidence until you check it.
+Unbookmarked candidates stay in the coin panel, since a single phrase can
+produce dozens and they would drown the list.
+
 ## The website
 
 Three static files and one JSON. Ranked list with tier badges, instant search

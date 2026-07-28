@@ -62,7 +62,13 @@ const state = {
   query: "", syllables: new Set(), lengths: new Set(), tiers: new Set(),
   minConf: 0, show: { dropping: false, meaning: false, bookmarked: false },
   sort: "score", coined: [], cancelLive: false, pronunciations: null,
+  // Bookmarked coinages, rebuilt from localStorage, in snapshot row shape.
+  // They are not in `rows`, which stays exactly what the snapshot published.
+  saved: [],
 };
+
+/** Everything the catalogue can show: the snapshot plus your saved coinages. */
+const allRows = () => (state.saved.length ? state.rows.concat(state.saved) : state.rows);
 
 const fmtAge = (iso) => {
   const d = ageDays(iso);
@@ -193,6 +199,58 @@ function renderCoined() {
   }).join("");
 }
 
+/* --- saved coinages ------------------------------------------------------ */
+
+/**
+ * A coined name has no snapshot row, so bookmarking one used to put it
+ * somewhere the UI could not show it: the harvest counter said "1 bookmarked"
+ * while the Bookmarked filter said "0 of 115 names", and after a reload the
+ * name existed only in localStorage and the export files. Rebuilding a row for
+ * each saved coinage puts it back in the catalogue, where it was asked for.
+ *
+ * The row is synthesised, not published, so it is flagged `coined` and tagged
+ * in the list. Confidence starts at `generated` and status at `unknown`;
+ * `effective()` will lift both if a live check was cached against the domain.
+ * @param {string} domain @param {Record<string, any>} meta
+ */
+function savedRow(domain, meta) {
+  const name = domain.split(".")[0];
+  const score = typeof meta.score === "number"
+    ? meta.score
+    : scoreName(name, state.phonemes, state.scoring).score;
+  const floors = state.data.tier_floors || {};
+  const tier = Object.keys(floors)
+    .sort((a, b) => floors[b] - floors[a])
+    .find((t) => score >= floors[t]) || "D";
+  const row = [];
+  row[F.NAME] = name;
+  row[F.SCORE] = score;
+  row[F.TIER] = tier;
+  row[F.SYL] = meta.syllables ?? [...name].filter(isVowel).length;
+  row[F.LEN] = name.length;
+  row[F.CONF] = 0;
+  row[F.STATUS] = 0;
+  row[F.CHECKED] = "";
+  row[F.FLAGS] = ["coined"];
+  row[F.MODS] = scoreName(name, state.phonemes, state.scoring).modifiers;
+  row[F.MEANINGS] = [];
+  row[F.ALTS] = {};
+  return row;
+}
+
+/** Rebuild `state.saved` from storage. Cheap, and the source of truth is
+ *  localStorage, so this can safely run after any bookmark change. */
+function rebuildSaved() {
+  if (!state.scoring) { state.saved = []; return; }
+  const known = new Set(state.rows.map((r) => r[F.NAME]));
+  state.saved = Object.entries(bookmarks.all())
+    .filter(([domain, meta]) => meta && meta.coined && !known.has(domain.split(".")[0]))
+    .map(([domain, meta]) => savedRow(domain, meta))
+    .sort((a, b) => b[F.SCORE] - a[F.SCORE]);
+}
+
+const isCoined = (row) => (row[F.FLAGS] || []).includes("coined");
+
 /* --- catalogue ---------------------------------------------------------- */
 
 function matcher(q) {
@@ -205,7 +263,7 @@ function matcher(q) {
 
 function applyFilters() {
   const match = matcher(state.query);
-  state.view = state.rows.filter((r) => {
+  state.view = allRows().filter((r) => {
     if (!match(r[F.NAME])) return false;
     if (state.syllables.size && !state.syllables.has(r[F.SYL])) return false;
     if (state.lengths.size && !state.lengths.has(r[F.LEN])) return false;
@@ -244,6 +302,9 @@ function rowHTML(row, rank) {
   }).join("");
 
   const tags = [];
+  if (isCoined(row)) {
+    tags.push(`<span class="tag tag-coined" title="You coined this in the browser. It is not part of the published snapshot and has never been checked unless you checked it.">coined</span>`);
+  }
   if (dropping) tags.push(`<span class="tag tag-drop">dropping</span>`);
   if (hasMeaning(row)) tags.push(`<span class="tag tag-mean" title="${esc(row[F.MEANINGS].join(', '))}">word</span>`);
   if ((row[F.FLAGS] || []).includes("premium")) tags.push(`<span class="tag">premium</span>`);
@@ -270,7 +331,8 @@ function rowHTML(row, rank) {
 function refreshRow(name) {
   const node = document.querySelector(`.row[data-name="${name}"]`);
   if (node) {
-    const row = state.rows.find((r) => r[F.NAME] === name);
+    const row = allRows().find((r) => r[F.NAME] === name);
+    if (!row) return;
     const rank = Number(node.querySelector(".rank").textContent);
     const tmp = document.createElement("div");
     tmp.innerHTML = rowHTML(row, rank);
@@ -289,11 +351,15 @@ function renderMore() {
 
 function updateCounts() {
   const n = state.view.length;
-  const total = state.rows.length;
+  const total = allRows().length;
   const drop = state.view.filter(isDropping).length;
+  const coined = state.view.filter(isCoined).length;
   let text = n === total ? `${total.toLocaleString()} names`
     : `${n.toLocaleString()} of ${total.toLocaleString()} names`;
   if (drop) text += ` · ${drop} dropping soon`;
+  // Named separately from the snapshot count in the masthead, so the extra
+  // rows are never mistaken for published, checked data.
+  if (coined) text += ` · ${coined} coined by you`;
   el("resultcount").textContent = text;
 
   btn("btn-fullcheck").disabled = n === 0;
@@ -321,7 +387,7 @@ function updateHarvest() {
 /* --- detail panel ------------------------------------------------------- */
 
 function openPanel(name) {
-  const row = state.rows.find((r) => r[F.NAME] === name);
+  const row = allRows().find((r) => r[F.NAME] === name);
   const coined = state.coined.find((c) => c.name === name);
   if (!row && !coined) return;
   const tld = state.data.tld;
@@ -347,14 +413,21 @@ function openPanel(name) {
     `<li><span>${esc(label)}</span><span class="${delta >= 0 ? "plus" : "minus"}">${delta >= 0 ? "+" : ""}${delta}</span></li>`
   ).join("") || `<li><span>no adjustments</span><span></span></li>`;
 
-  const originBlock = coined ? `
+  // After a reload `state.coined` is empty, but a saved coinage still has its
+  // English and Japanese in the bookmark. Pattern and vowel are not persisted,
+  // so those two rows only appear while the coin panel still holds the result.
+  const savedMeta = (!coined && row && isCoined(row)) ? bookmarks.all()[d] : null;
+  const origin = coined || savedMeta;
+  const originBlock = origin ? `
     <h3>Coined from</h3>
     <dl class="kv">
-      <dt>English</dt><dd>${esc(coined.origin.join(" "))}</dd>
-      <dt>Japanese</dt><dd class="mono">${esc(coined.japanese)}</dd>
-      <dt>Pattern</dt><dd>${esc(coined.kinds.join(", "))}</dd>
-      <dt>Vowel</dt><dd>${esc(coined.epenthetic)}</dd>
-    </dl>` : "";
+      <dt>English</dt><dd>${esc((origin.origin || []).join(" "))}</dd>
+      <dt>Japanese</dt><dd class="mono">${esc(origin.japanese || "")}</dd>
+      ${coined ? `<dt>Pattern</dt><dd>${esc(coined.kinds.join(", "))}</dd>
+      <dt>Vowel</dt><dd>${esc(coined.epenthetic)}</dd>` : ""}
+    </dl>
+    <p class="panel-note dim">You coined this. It is not in the published
+      snapshot, so nothing here has been checked unless you checked it.</p>` : "";
 
   const meanings = row ? (row[F.MEANINGS] || []) : [];
   const meaningBlock = meanings.length ? `
@@ -528,7 +601,9 @@ function provenanceNotice() {
     parts.push(`${weak.toLocaleString()} of these were only checked against DNS, which misses
       registered-but-undelegated names. Use the <em>Verified at least to</em> control to hide them.`);
   }
-  parts.push(`Refresh locally: <code>python3 -m pdgen check --recheck-older-than 21 &amp;&amp; python3 -m pdgen publish</code>`);
+  // No CLI command here. A visitor has no clone to run it in, so it was
+  // maintainer instruction on a public page. It lives in the README, in
+  // skill.md and in llms.txt, which is where someone who can act on it looks.
   showNotice(age > STALE_DAYS ? "This snapshot is getting old" : "How current this is",
     parts.join(" "), age > STALE_DAYS);
 }
@@ -566,16 +641,30 @@ function buildConfidenceChips() {
 }
 
 function toggleBookmark(name) {
-  const row = state.rows.find((r) => r[F.NAME] === name);
+  const published = state.rows.find((r) => r[F.NAME] === name);
+  const saved = state.saved.find((r) => r[F.NAME] === name);
   const coined = state.coined.find((c) => c.name === name);
   bookmarks.toggle(domainOf(name), {
-    score: row ? row[F.SCORE] : coined ? coined.score : null,
-    syllables: row ? row[F.SYL] : coined ? coined.syllables : null,
-    coined: Boolean(coined && !row),
+    score: published ? published[F.SCORE] : coined ? coined.score : saved ? saved[F.SCORE] : null,
+    syllables: published ? published[F.SYL] : coined ? coined.syllables : saved ? saved[F.SYL] : null,
+    // A saved coinage keeps its provenance when re-bookmarked after a reload,
+    // when `state.coined` is empty and only the synthetic row remains.
+    coined: Boolean(!published && (coined || saved)),
     origin: coined ? coined.origin : undefined,
     japanese: coined ? coined.japanese : undefined,
   });
-  refreshRow(name);
+
+  // A coinage entering or leaving the bookmarks changes what the catalogue
+  // contains, not just how a star looks, so the list has to be rebuilt. For an
+  // ordinary snapshot row nothing structural changed, and re-filtering would
+  // throw away the reader's scroll position for no reason.
+  const before = state.saved.length;
+  rebuildSaved();
+  if (state.saved.length !== before || state.show.bookmarked) {
+    applyFilters();
+  } else {
+    refreshRow(name);
+  }
   document.querySelectorAll(`[data-bookmark="${name}"]`)
     .forEach((n) => n.classList.toggle("is-on", bookmarks.has(domainOf(name))));
   shuffle();
@@ -737,6 +826,10 @@ async function boot() {
       toggle.title = "No dictionary published. Run: pdgen dictionary build";
     }
   });
+
+  // Before the first applyFilters, or saved coinages would be missing from the
+  // catalogue until the next bookmark toggle.
+  rebuildSaved();
 
   provenanceNotice();
   wire();

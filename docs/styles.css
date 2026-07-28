@@ -325,6 +325,12 @@ h1 {
 .tag-drop { color: var(--rust); background: color-mix(in srgb, var(--rust) 10%, transparent); }
 .tag-mean { color: var(--ochre); }
 .tag-alt  { color: var(--cobalt-soft); }
+/* Yours, not the snapshot's. Dashed so it reads as provisional next to the
+   solid-bordered tags, which all describe verified facts about a name. */
+.tag-coined {
+  color: var(--cobalt); border-style: dashed;
+  background: color-mix(in srgb, var(--cobalt) 8%, transparent);
+}
 
 .row.is-dropping::after {
   content: ""; position: absolute; left: -0.6rem; top: 0; bottom: 0;
