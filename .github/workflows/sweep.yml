@@ -21,10 +21,22 @@ name: Sweep
 # That is a lot to ask of a registry. If you start seeing 429s, drop rdap_rps
 # to 1 before you shorten the slice — a slow sweep finishes, a banned one does
 # not.
+#
+# So the *scheduled* run is deliberately gentler than a manual one: weekly,
+# 90m at 1 req/s, about 5,400 registry calls per slice. That still covers the
+# 21-day re-verification window and still commits the marker file that stops
+# Actions auto-disabling, without leaving a 36k/day load pointed at Verisign
+# forever. A manual dispatch keeps the full 5h at 2 req/s.
+#
+# The scheduled chain cap is 2, not 12. Most of a slice's names never reach
+# RDAP at all (the DNS stage answers first), so a 90m slice screens most of
+# the queue and normally completes without chaining. The low cap bounds the
+# case where it does not: at most 3 slices, ~16k calls, rather than 13 slices
+# and ~70k. A manual dispatch still gets 12.
 
 on:
   schedule:
-    - cron: "23 3 * * *"       # daily; the chain handles the rest
+    - cron: "23 3 * * 0"       # weekly, Sunday; the chain handles the rest
   workflow_dispatch:
     inputs:
       duration:
@@ -63,6 +75,8 @@ jobs:
     # 5h50m: above the 5h budget below, under the 6h hard kill. The CLI always
     # stops itself first, so this is a backstop, not the mechanism.
     timeout-minutes: 350
+    outputs:
+      artifact: ${{ steps.upload.outcome }}
 
     steps:
       - uses: actions/checkout@v4
@@ -90,11 +104,16 @@ jobs:
           with open(os.environ["GITHUB_OUTPUT"], "a") as fh:
               fh.write(f"duration={raw}\nseconds={int(secs)}\n")
               fh.write(f"chain={os.environ['CHAIN']}\n")
-          print(f"  slice: {human(secs)}")
+              fh.write(f"rps={os.environ['RPS']}\n")
+          print(f"  slice: {human(secs)} at {os.environ['RPS']} req/s")
           PY
         env:
-          SLICE: ${{ inputs.duration || '5h' }}
-          CHAIN: ${{ inputs.chain_remaining || '12' }}
+          # On workflow_dispatch these inputs always carry their declared
+          # defaults, so the fallback only ever applies to a scheduled run.
+          # That is where the gentler numbers live: see the header.
+          SLICE: ${{ inputs.duration || '90m' }}
+          RPS: ${{ inputs.rdap_rps || '1' }}
+          CHAIN: ${{ inputs.chain_remaining || '2' }}
 
       - name: Pull the database from the release
         env:
@@ -107,7 +126,7 @@ jobs:
       - name: Plan
         run: |
           python3 -m pdgen plan --include-stale \
-            --rdap-rps "${{ inputs.rdap_rps || '2' }}" \
+            --rdap-rps "${{ steps.cfg.outputs.rps }}" \
             --budget "${{ steps.cfg.outputs.duration }}"
 
       - name: Check a slice, best candidates first
@@ -117,30 +136,39 @@ jobs:
             --stage "${{ inputs.stage || 'rdap' }}" \
             --max-duration "${{ steps.cfg.outputs.duration }}" \
             --recheck-older-than "${{ inputs.recheck_older_than || '21' }}" \
-            --rdap-rps "${{ inputs.rdap_rps || '2' }}" \
+            --rdap-rps "${{ steps.cfg.outputs.rps }}" \
             --workers 8
 
       # Everything below runs even if the check failed or was cancelled.
       # Losing five hours of registry calls to a broken later step would be the
       # worst failure mode this project has.
+      #
+      # But `always()` alone is too broad for the steps that *write*. If a step
+      # before the check fails, `check` is skipped, the runner has no database,
+      # and `pdgen publish` happily writes a valid 0-row snapshot and exits 0.
+      # `--fail-on-demo` does not catch that: an empty snapshot is not demo
+      # data. Committing it would replace the live site with nothing. So the
+      # writing steps additionally require that the check actually ran. Its
+      # conclusion may be `failure` (a slice that died halfway still holds real
+      # results worth publishing) but never `skipped`.
       - name: Push the database back to the release
-        if: always()
+        if: always() && steps.check.conclusion != 'skipped'
         env:
           GH_TOKEN: ${{ github.token }}
         run: python3 -m pdgen release push
 
       - name: Stats
-        if: always()
+        if: always() && steps.check.conclusion != 'skipped'
         run: python3 -m pdgen stats
 
       - name: Build the dictionary and publish
-        if: always()
+        if: always() && steps.check.conclusion != 'skipped'
         run: |
           python3 -m pdgen dictionary build
           python3 -m pdgen publish --min-confidence rdap --fail-on-demo
 
       - name: Commit the snapshot
-        if: always()
+        if: always() && steps.check.conclusion != 'skipped'
         run: |
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
@@ -153,8 +181,9 @@ jobs:
           git pull --rebase --autostash origin "${GITHUB_REF_NAME}"
           git push
 
-      - uses: actions/upload-pages-artifact@v3
-        if: always()
+      - id: upload
+        uses: actions/upload-pages-artifact@v3
+        if: always() && steps.check.conclusion != 'skipped'
         with:
           path: docs
 
@@ -173,7 +202,7 @@ jobs:
                "dispatching another slice ($NEXT chained runs left after this)."
           gh workflow run sweep.yml \
             -f duration="${{ steps.cfg.outputs.duration }}" \
-            -f rdap_rps="${{ inputs.rdap_rps || '2' }}" \
+            -f rdap_rps="${{ steps.cfg.outputs.rps }}" \
             -f stage="${{ inputs.stage || 'rdap' }}" \
             -f recheck_older_than="${{ inputs.recheck_older_than || '21' }}" \
             -f chain_remaining="$NEXT"
@@ -194,32 +223,13 @@ jobs:
             echo "| Chained runs left | ${{ steps.cfg.outputs.chain }} |"
           } >> "$GITHUB_STEP_SUMMARY"
 
-      # GitHub does not email you when a *scheduled* run fails, so a broken
-      # sweep would be silent until you happened to look.
-      - name: Open an issue if the sweep failed
-        if: failure()
-        env:
-          GH_TOKEN: ${{ github.token }}
-        run: |
-          OPEN=$(gh issue list --label sweep-failure --state open --json number --jq 'length')
-          [ "$OPEN" = "0" ] || exit 0
-          gh issue create --label sweep-failure \
-            --title "Sweep failed on $(date -u +%F)" \
-            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
-
-          The chain stops on failure by design, so no further slices will run
-          until this is resolved.
-
-          Likely causes, most common first:
-          - The registry started returning 429. Lower rdap_rps to 1.
-          - The release asset is missing or corrupt (pdgen release status).
-          - The snapshot still contains demo data (--fail-on-demo fired).
-
-          Close this issue once fixed, then re-run the workflow manually."
-
   deploy:
     needs: sweep
-    if: always()
+    # `always()`, because a slice that failed partway still produced an
+    # artifact worth publishing. But not when the upload was skipped: there
+    # would be nothing to deploy, and deploy-pages would fail on principle and
+    # drag the whole run red for no reason.
+    if: always() && needs.sweep.outputs.artifact == 'success'
     runs-on: ubuntu-latest
     # Shared with pages.yml. Two Pages deployments at once is an error, and the
     # sweep's snapshot commit can land while a push-triggered deploy is running.
@@ -232,3 +242,52 @@ jobs:
     steps:
       - id: deploy
         uses: actions/deploy-pages@v4
+
+  # GitHub does not email you when a *scheduled* run fails, so a break would be
+  # silent until you happened to look.
+  #
+  # This is a separate job rather than a step in `sweep` on purpose. The old
+  # version lived inside `sweep`, so a `deploy` failure notified nobody: the
+  # sweep job succeeded, the site silently went stale, and the only trace was a
+  # red tick in the Actions tab. Observed on 2026-07-28, when deploy-pages hit
+  # "Multiple artifacts named github-pages" and no issue was opened.
+  notify:
+    needs: [sweep, deploy]
+    # Not `failure()`. A job whose `needs` were skipped is itself skipped, and
+    # `deploy` is now skippable, so `failure()` would silence exactly the case
+    # this job exists for: sweep dies early, deploy is skipped, nobody is told.
+    # Checking the results explicitly under `always()` has no such hole.
+    if: >
+      always() &&
+      (needs.sweep.result == 'failure' || needs.deploy.result == 'failure')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Open an issue if any job failed
+        env:
+          GH_TOKEN: ${{ github.token }}
+          # No checkout in this job, so gh cannot infer the repo from a remote.
+          GH_REPO: ${{ github.repository }}
+          SWEEP: ${{ needs.sweep.result }}
+          DEPLOY: ${{ needs.deploy.result }}
+        run: |
+          OPEN=$(gh issue list --label sweep-failure --state open --json number --jq 'length')
+          [ "$OPEN" = "0" ] || exit 0
+          gh issue create --label sweep-failure \
+            --title "Sweep failed on $(date -u +%F)" \
+            --body "Run: ${{ github.server_url }}/${{ github.repository }}/actions/runs/${{ github.run_id }}
+
+          sweep: ${SWEEP}
+          deploy: ${DEPLOY}
+
+          If \`sweep\` failed, the chain stops by design and no further slices
+          run until this is resolved. Likely causes, most common first:
+          - The registry started returning 429. Lower rdap_rps to 1.
+          - The release asset is missing or corrupt (pdgen release status).
+          - The snapshot still contains demo data (--fail-on-demo fired).
+
+          If only \`deploy\` failed, the data is safe: the database went to the
+          release and the snapshot was committed. Only the published site is
+          stale. The next slice redeploys it, or dispatch pages.yml to do it now.
+          A duplicate-artifact error here is a GitHub-side flake, not a repo bug.
+
+          Close this issue once fixed, then re-run the workflow manually."

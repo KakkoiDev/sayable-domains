@@ -317,12 +317,22 @@ gh workflow run sweep.yml -f duration=5h -f rdap_rps=2
 ```
 
 Two guards on the chain, since a self-triggering workflow can burn a budget:
-`chain_remaining` starts at 12 and decrements each hop, and the chain only
-fires on success — a failed slice stops everything and opens an issue.
+`chain_remaining` decrements each hop, and the chain only fires on success. A
+failed slice stops everything and opens an issue.
 
 **5 hours at 2 req/s is 36,000 requests in one session from one IP.** That is a
 lot to ask of a registry. If you see 429s, lower `rdap_rps` to 1 before you
 shorten the slice: a slow sweep finishes, a banned one does not.
+
+**The scheduled run is deliberately gentler than a manual one.** A hand-run
+slice is 5h at 2 req/s and may chain 12 times, because you are watching it.
+The weekly cron gets 90m at 1 req/s and a chain cap of 2, which is roughly
+5,400 registry calls per slice and at most ~16,000 in a week. That is enough to
+keep the 21-day re-verification window fresh without pointing a standing
+36k/day load at Verisign forever. The numbers live in one place: the `SLICE`,
+`RPS` and `CHAIN` env vars on the `Validate the slice length` step. Because
+`workflow_dispatch` inputs always carry their declared defaults, those
+fallbacks only ever apply to a scheduled run.
 
 Five things this gets right that are easy to get wrong:
 
@@ -331,6 +341,13 @@ Five things this gets right that are easy to get wrong:
   wall loses everything not yet pushed, and the runner disk is ephemeral.
 - **Every step after the check runs `if: always()`.** Losing an hour of
   registry calls because a later step broke would be the worst failure here.
+  The steps that *write* carry a second condition, `steps.check.conclusion !=
+  'skipped'`, because `always()` on its own is a data-loss path: if something
+  fails before the check, the runner never pulls a database, and `pdgen
+  publish` will cheerfully write a valid **0-row** snapshot and exit 0.
+  `--fail-on-demo` does not catch it, since an empty snapshot is not demo data.
+  Committing that replaces the live site with nothing. A check that *failed* is
+  fine to publish from; a check that never ran is not.
 - **`concurrency` prevents overlapping slices.** The CLI's lock file is
   per-machine and cannot see another runner, so this is the only thing stopping
   two runs from doubling your real request rate.
@@ -344,7 +361,11 @@ Scheduled runs are commonly delayed 10–30 minutes and occasionally more. This
 does not matter for a sweep; do not build anything time-critical on it.
 
 If a scheduled run fails, GitHub does not email you. The workflow opens an
-issue instead (one at a time, labelled `sweep-failure`).
+issue instead (one at a time, labelled `sweep-failure`). That lives in a
+separate `notify` job with `needs: [sweep, deploy]`, so a failure in *either*
+is reported. An earlier version had it as a step inside `sweep`, which meant a
+Pages deploy failure notified nobody: the sweep job went green, the site
+silently went stale, and the only trace was a red tick in the Actions tab.
 
 ### Rehearsing the chain
 

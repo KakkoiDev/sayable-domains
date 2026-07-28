@@ -172,6 +172,17 @@ live on an ephemeral runner. Fixed three ways: `--max-duration` stops the CLI
 first, `timeout-minutes: 350` sits above the 5h budget and under the 6h wall,
 and every step after the check is `if: always()`.
 
+**`always()` on its own was too broad, and the hole was a data-loss one.** The
+steps that write now also require `steps.check.conclusion != 'skipped'`. If a
+step before the check fails, `check` is skipped and the runner has no database
+at all. `pdgen publish` does not object to that: it writes a structurally valid
+snapshot with `published: 0` and exits 0, and `--fail-on-demo` does not fire
+because an empty snapshot is not demo data. The commit step would then push
+that over the live one and the site would serve nothing, silently. Publishing
+from a check that *failed* is intentional and still happens; publishing from a
+check that never ran is the bug. Worth knowing if you call `pdgen publish` by
+hand after a failed `release pull`: the CLI has the same sharp edge.
+
 Two platform behaviours worth knowing:
 
 - **Scheduled workflows are disabled after 60 days of repository inactivity**,
@@ -190,10 +201,19 @@ token and `permissions: actions: write`. No secret required.
 Two guards on the chain, because an unbounded self-triggering workflow is a
 good way to burn a budget:
 
-- `chain_remaining` starts at 12 and decrements each hop, so a stuck state can
-  cost at most 12 slices rather than running forever.
+- `chain_remaining` decrements each hop, so a stuck state costs a bounded
+  number of slices rather than running forever. A manual dispatch starts at 12,
+  the weekly cron at 2. The cron is also 90m at 1 req/s rather than 5h at 2, so
+  its worst case is roughly 16,000 registry calls in a week, not 70,000. The
+  three numbers live on the `Validate the slice length` step's env block, and
+  because `workflow_dispatch` inputs always carry their declared defaults,
+  those fallbacks only ever apply to a scheduled run.
 - The chain only fires on `success()`. If a slice fails, nothing re-dispatches
-  and an issue is opened instead.
+  and an issue is opened instead. The issue comes from a separate `notify` job
+  with `needs: [sweep, deploy]`, so a Pages deploy failure is reported too.
+  When it was a step inside `sweep`, a deploy failure was completely silent:
+  observed 2026-07-28, when `deploy-pages` hit "Multiple artifacts named
+  github-pages" and nothing was raised.
 
 ## 4. Known design limitations
 

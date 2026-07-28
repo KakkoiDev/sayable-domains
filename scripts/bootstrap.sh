@@ -98,7 +98,7 @@ cat <<EOF
     python3 -m pdgen publish --min-confidence rdap --fail-on-demo
     python3 -m pdgen release push && git add docs/ && git commit -m refresh && git push
 
-  Then let the sweep take over (a bounded slice every 6h, resumable):
+  Then let the sweep take over (a bounded weekly slice, resumable):
     gh workflow run sweep.yml -f duration=5m -f rdap_rps=1 -f chain_remaining=3
 
 EOF
