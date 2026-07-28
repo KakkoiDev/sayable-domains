@@ -38,7 +38,7 @@ Every one of these was written against documentation and never executed.
 | **Pages source** | Must be **GitHub Actions**, not "deploy from a branch". The dictionary shards are gitignored and only exist inside the Actions artifact, so a branch deploy silently ships a site whose Dictionary toggle never works. `scripts/bootstrap.sh` sets this. | After the first deploy, open the coin panel and confirm the Dictionary chip is not disabled. |
 | **`scripts/bootstrap.sh`** | Never executed. The Pages API call has two fallbacks but has not been run against a real account. | If it fails, set Settings → Pages → Source: GitHub Actions by hand. |
 | **`sweep.yml` chaining** | The *resume* half is now proven offline by `tools/rehearse_chain.py` (9 slices, zero duplicate checks, queue drains, `complete` flips once) and runs in CI. The *dispatch* half is still unproven: a chain that fails to fire looks identical to a completed queue. | `gh workflow run sweep.yml -f duration=5m -f rdap_rps=1 -f chain_remaining=3`, then watch for a second run appearing on its own. |
-| **`sweep.yml`** | Never executed. The release pull/push steps depend on `gh` behaving inside Actions. | Trigger it manually with `top: 50` before letting the schedule run. |
+| **`sweep.yml`** | Never executed. The release pull/push steps depend on `gh` behaving inside Actions. | Trigger it manually with a short slice before letting the schedule run: `gh workflow run sweep.yml -f duration=5m -f rdap_rps=1 -f chain_remaining=3`. There is no `top` input. |
 | **Zone file parser** | Tested only on synthetic input, never on a real 20 GB CZDS file. | Check the loaded label count looks sane. |
 | **Rate limits** | `--rdap-rps 8` is a guess. Registries throttle aggressively and will ban. | **Start at `--rdap-rps 2` and watch for 429s.** |
 
@@ -169,8 +169,8 @@ Hosted Actions jobs are terminated at 6 hours and the termination is a failure.
 An earlier version pushed the database to the release as the *final* step,
 which meant a job hitting the wall lost the whole run — the on-disk checkpoints
 live on an ephemeral runner. Fixed three ways: `--max-duration` stops the CLI
-first, `timeout-minutes: 90` is well under the wall, and every step after the
-check is `if: always()`.
+first, `timeout-minutes: 350` sits above the 5h budget and under the 6h wall,
+and every step after the check is `if: always()`.
 
 Two platform behaviours worth knowing:
 
