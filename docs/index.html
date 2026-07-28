@@ -9,6 +9,9 @@
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link href="https://fonts.googleapis.com/css2?family=Archivo:wght@600;800&family=IBM+Plex+Mono:wght@400;500;600&family=IBM+Plex+Sans:wght@400;500;600&display=swap" rel="stylesheet">
 <link rel="stylesheet" href="styles.css">
+<!-- Without this the browser requests /favicon.ico from the account root,
+     which is outside the project page and 404s on every load. -->
+<link rel="icon" href="favicon.svg" type="image/svg+xml">
 <!-- Agent discovery: an AI pointed at this URL can find the operating guide
      and the machine-readable schema without being told where to look. -->
 <link rel="alternate" type="text/markdown" href="skill.md" title="Agent skill">

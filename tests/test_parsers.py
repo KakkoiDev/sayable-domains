@@ -327,15 +327,23 @@ class TestReleasePush(unittest.TestCase):
                         "checked_at": f"2026-07-{i % 28 + 1:02d}"}}}
             for i in range(400)}}).encode()
 
-    def _push(self, db_bytes, remote_bytes):
-        """Run push against a stub `gh`. Returns (uploaded, calls)."""
+    def _push(self, db_bytes, remote_bytes, stale_readback=False):
+        """Run push against a stub `gh`. Returns (code, uploaded, calls).
+
+        `stale_readback` makes the release report the size it held *before* the
+        upload, which is what a silently-ineffective push looks like.
+        """
         uploaded = {}
         calls = []
 
         def fake_run(cmd):
             calls.append(cmd)
             if cmd[1:3] == ["release", "view"]:
-                return (0, "")                       # the release already exists
+                if "--json" not in cmd:
+                    return (0, "")                   # the release already exists
+                held = remote_bytes if stale_readback else uploaded.get(releasemod.ASSET, b"")
+                return (0, json.dumps({"assets": [
+                    {"name": releasemod.ASSET, "size": len(held)}]}))
             if cmd[1:3] == ["release", "download"]:
                 dest = Path(cmd[cmd.index("--dir") + 1])
                 dest.mkdir(parents=True, exist_ok=True)
@@ -382,6 +390,58 @@ class TestReleasePush(unittest.TestCase):
                       "the rollback copy was never uploaded, so a corrupt push "
                       "would leave no way back")
         self.assertEqual(uploaded[releasemod.PREVIOUS], old)
+
+    def test_fails_when_the_release_did_not_actually_change(self):
+        """The readback is the only thing that can tell an upload from a no-op.
+        Without it, gh's exit code alone reported success for four slices."""
+        new = self._db(400, "this-slice")
+        old = gzip.compress(self._db(400, "already-on-the-release") + b"padding")
+
+        code, _, _ = self._push(new, old, stale_readback=True)
+
+        self.assertNotEqual(code, 0,
+                            "push reported success while the release still held "
+                            "the old asset")
+
+
+class TestPublishGuards(unittest.TestCase):
+    """`publish` refusals have to run before the write. They used to run after,
+    so --fail-on-demo returned 3 having already replaced the live snapshot with
+    the data it was refusing to publish."""
+
+    def _publish(self, db, out, **flags):
+        import argparse
+        from pdgen import cli
+        defaults = dict(
+            db="unused", out=str(out), tld="com", min_confidence="rdap",
+            min_score=0.0, limit=5000, include_taken=False, no_dropping=False,
+            fail_on_demo=False, min_rows=0)
+        args = argparse.Namespace(**{**defaults, **flags})
+        original = dbmod.load
+        dbmod.load = lambda _: db
+        try:
+            return cli.cmd_publish(args)
+        finally:
+            dbmod.load = original
+
+    def test_empty_database_does_not_overwrite_a_good_snapshot(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "domains.json"
+            good = json.dumps({"published": 5000, "rows": ["real data"]})
+            out.write_text(good)
+
+            code = self._publish(dbmod.empty(), out, min_rows=1)
+
+            self.assertEqual(code, 3)
+            self.assertEqual(out.read_text(), good,
+                             "publish overwrote the live snapshot with an empty "
+                             "one before refusing")
+
+    def test_min_rows_defaults_to_off(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            out = Path(tmp) / "domains.json"
+            self.assertEqual(self._publish(dbmod.empty(), out), 0)
+            self.assertEqual(json.loads(out.read_text())["published"], 0)
 
 
 if __name__ == "__main__":

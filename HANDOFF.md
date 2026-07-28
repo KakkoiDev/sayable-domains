@@ -229,9 +229,22 @@ good way to burn a budget:
 - ~~The rate limiter is per-process.~~ **Fixed.** A lock file next to the
   database now blocks a second network run, reclaims stale locks from crashed
   processes, and can be overridden with `--force-lock`.
-- **No incremental snapshot loading.** The site fetches all ~376 KB of
-  `domains.json` on every page load. Fine now; add ETag handling or a
-  versioned filename if the snapshot grows past a megabyte.
+- **No incremental snapshot loading.** The site fetches the whole of
+  `domains.json` rather than a delta. The ~376 KB figure this note used to
+  quote was the file on disk, not the transfer, and it made the problem sound
+  worse than it is. Measured against the deployed site: GitHub Pages serves it
+  gzipped, and `fetch(..., {cache: "no-cache"})` revalidates rather than
+  refetching.
+
+  | | bytes |
+  | --- | --- |
+  | on disk / uncompressed | 18,981 |
+  | as a browser fetches it (gzip) | 2,744 |
+  | repeat load (ETag, HTTP 304) | 0 |
+
+  Compression scales with the file, so a 1 MB snapshot is roughly 150 KB on the
+  wire. Worth revisiting past that, but a versioned filename or a delta format
+  would be premature now.
 - ~~`query` reads the whole database.~~ **Fixed.** It now reads the published
   snapshot by default (0.10s vs 1.29s); pass `--source db` or
   `--include-unchecked` to search everything.

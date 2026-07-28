@@ -478,6 +478,24 @@ def cmd_publish(args) -> int:
                            min_confidence=args.min_confidence, limit=args.limit,
                            include_taken=args.include_taken,
                            include_dropping=not args.no_dropping)
+    # Refuse *before* writing. Both guards used to run after pubmod.write, so
+    # `--fail-on-demo` returned 3 having already replaced the live snapshot
+    # with the data it was refusing to publish. A guard downstream of the
+    # destructive act is a report, not a guard.
+    if args.fail_on_demo and payload["demo"]:
+        print(f"  refusing to publish: this snapshot still contains demo data. "
+              f"Run `python3 tools/seed_demo.py --clear` first.", file=sys.stderr)
+        return 3
+    if payload["published"] < args.min_rows:
+        # An empty database produces a structurally valid snapshot with zero
+        # rows and no demo flag, so --fail-on-demo never sees it. Publishing
+        # that over a good file is silent data loss, which is exactly what a
+        # sweep slice does after a failed `release pull`.
+        print(f"  refusing to publish {payload['published']:,} names, under "
+              f"--min-rows {args.min_rows:,}. The database at {args.db} has "
+              f"{len(db['names']):,} names; check that it loaded.", file=sys.stderr)
+        return 3
+
     size = pubmod.write(payload, args.out)
     print(f"  published {payload['published']:,} names ({size / 1024:.0f} KB) -> {args.out}")
     if payload["truncated"]:
@@ -485,10 +503,6 @@ def cmd_publish(args) -> int:
     if payload["demo"]:
         print(f"  WARNING: this snapshot still contains demo data. "
               f"Run `python3 tools/seed_demo.py --clear` first.")
-        if args.fail_on_demo:
-            print(f"  --fail-on-demo set; refusing to treat this as publishable.",
-                  file=sys.stderr)
-            return 3
     by_tier = payload["db_stats"]["available_by_tier"]
     if by_tier:
         print("  available by tier: " + "  ".join(f"{k}={v:,}" for k, v in sorted(by_tier.items())))
@@ -886,6 +900,10 @@ def build_parser() -> argparse.ArgumentParser:
     pu.add_argument("--include-taken", action="store_true")
     pu.add_argument("--fail-on-demo", action="store_true",
                     help="exit nonzero if the snapshot still holds seeded data (use in CI)")
+    pu.add_argument("--min-rows", type=int, default=0, metavar="N",
+                    help="refuse to write a snapshot with fewer than N names. "
+                         "Guards against replacing a good snapshot with an empty "
+                         "one after a failed `release pull` (use in CI)")
     pu.add_argument("--no-dropping", action="store_true",
                     help="omit taken-but-dropping names")
     pu.set_defaults(func=cmd_publish)

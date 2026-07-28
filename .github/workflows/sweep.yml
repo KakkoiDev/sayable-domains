@@ -165,7 +165,10 @@ jobs:
         if: always() && steps.check.conclusion != 'skipped'
         run: |
           python3 -m pdgen dictionary build
-          python3 -m pdgen publish --min-confidence rdap --fail-on-demo
+          # --min-rows is the second half of the guard above. That one stops
+          # the step running with no database; this one stops it writing an
+          # empty snapshot for any other reason.
+          python3 -m pdgen publish --min-confidence rdap --fail-on-demo --min-rows 1
 
       - name: Commit the snapshot
         if: always() && steps.check.conclusion != 'skipped'

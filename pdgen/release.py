@@ -52,6 +52,37 @@ def decompress(src: Path, dest: Path) -> None:
         shutil.copyfileobj(fi, fo)
 
 
+def _remote_asset(tag: str, repo_args: list[str], name: str = ASSET) -> dict | None:
+    """The asset as the release actually holds it, or None."""
+    code, out = _run(["gh", "release", "view", tag, "--json", "assets", *repo_args])
+    if code != 0:
+        return None
+    try:
+        return next((a for a in json.loads(out).get("assets", []) if a["name"] == name), None)
+    except (json.JSONDecodeError, KeyError, TypeError):
+        return None
+
+
+def verify(tag: str, expected_size: int, repo_args: list[str]) -> int:
+    """Read the asset back and confirm it is the one we just sent.
+
+    `push` used to print "pushed" on the strength of gh's exit code alone. That
+    is how a bug that re-uploaded the *previous* database survived four chained
+    sweep slices without a single error line: every push reported success while
+    the release never moved. A readback is the only thing that can tell the
+    difference between an upload and a no-op.
+    """
+    remote = _remote_asset(tag, repo_args)
+    if remote is None:
+        print(f"  failed: {ASSET} is not on release {tag} after the upload")
+        return 1
+    if remote.get("size") != expected_size:
+        print(f"  failed: release {tag} holds {remote.get('size')} bytes but "
+              f"{expected_size} were uploaded. The asset did not update.")
+        return 1
+    return 0
+
+
 def push(db_path: str | Path, repo: str | None, tag: str = DEFAULT_TAG,
          notes: str = "") -> int:
     """Upload the database as a release asset, replacing any previous copy."""
@@ -120,7 +151,11 @@ def push(db_path: str | Path, repo: str | None, tag: str = DEFAULT_TAG,
                 print(f"  failed: {out}")
                 return code
 
-    print(f"  pushed -> release {tag}, asset {ASSET}")
+        bad = verify(tag, size, repo_args)
+        if bad:
+            return bad
+
+    print(f"  pushed -> release {tag}, asset {ASSET} ({size:,} bytes, verified)")
     return 0
 
 
