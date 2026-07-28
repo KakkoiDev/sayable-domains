@@ -24,6 +24,7 @@ from pathlib import Path
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
 from pdgen import check, db as dbmod, dictionary, generate, phonetics as ph, plan  # noqa: E402
+from pdgen import release as releasemod  # noqa: E402
 
 
 class FakeResponse(io.BytesIO):
@@ -308,6 +309,79 @@ class TestDictionary(unittest.TestCase):
     def test_shard_key(self):
         self.assertEqual(dictionary.shard_key("cloud"), "cl")
         self.assertEqual(dictionary.shard_key("a"), "a")
+
+
+class TestReleasePush(unittest.TestCase):
+    """`release push` is the only thing that carries a sweep slice's work to
+    the next one. It used to compress the new database and then let
+    `gh release download` overwrite it at the same path, so the upload sent the
+    old bytes back and the release never advanced. Four chained slices checked
+    roughly 25,000 names and the stored database still had zero checks."""
+
+    @staticmethod
+    def _db(n, marker):
+        """A database big enough to clear push's own small-file guard."""
+        return json.dumps({"names": {
+            f"kaminu{i}": {"score": 90 + i % 97 / 7, "marker": marker, "tlds": {
+                "com": {"confidence": "rdap", "status": "available",
+                        "checked_at": f"2026-07-{i % 28 + 1:02d}"}}}
+            for i in range(400)}}).encode()
+
+    def _push(self, db_bytes, remote_bytes):
+        """Run push against a stub `gh`. Returns (uploaded, calls)."""
+        uploaded = {}
+        calls = []
+
+        def fake_run(cmd):
+            calls.append(cmd)
+            if cmd[1:3] == ["release", "view"]:
+                return (0, "")                       # the release already exists
+            if cmd[1:3] == ["release", "download"]:
+                dest = Path(cmd[cmd.index("--dir") + 1])
+                dest.mkdir(parents=True, exist_ok=True)
+                (dest / releasemod.ASSET).write_bytes(remote_bytes)
+                return (0, "")
+            if cmd[1:3] == ["release", "upload"]:
+                path = Path(cmd[4])
+                uploaded[path.name] = path.read_bytes()
+                return (0, "")
+            raise AssertionError(f"unexpected gh call: {cmd}")
+
+        original_run, original_which = releasemod._run, releasemod.shutil.which
+        releasemod._run = fake_run
+        releasemod.shutil.which = lambda _: "/usr/bin/gh"
+        try:
+            with tempfile.TemporaryDirectory() as work:
+                local = Path(work) / "db.json"
+                local.write_bytes(db_bytes)
+                code = releasemod.push(local, "owner/repo")
+        finally:
+            releasemod._run, releasemod.shutil.which = original_run, original_which
+        return code, uploaded, calls
+
+    def test_uploads_the_new_database_not_the_one_it_just_downloaded(self):
+        new = self._db(400, "this-slice")
+        old = gzip.compress(self._db(400, "already-on-the-release"))
+
+        code, uploaded, _ = self._push(new, old)
+
+        self.assertEqual(code, 0)
+        self.assertIn(releasemod.ASSET, uploaded)
+        with gzip.open(io.BytesIO(uploaded[releasemod.ASSET]), "rb") as fh:
+            self.assertEqual(fh.read(), new,
+                             "push uploaded the previous release asset instead of "
+                             "the local database, so the slice's work is lost")
+
+    def test_keeps_exactly_one_previous_copy(self):
+        new = self._db(400, "this-slice")
+        old = gzip.compress(self._db(400, "already-on-the-release"))
+
+        _, uploaded, _ = self._push(new, old)
+
+        self.assertIn(releasemod.PREVIOUS, uploaded,
+                      "the rollback copy was never uploaded, so a corrupt push "
+                      "would leave no way back")
+        self.assertEqual(uploaded[releasemod.PREVIOUS], old)
 
 
 if __name__ == "__main__":

@@ -65,7 +65,16 @@ def push(db_path: str | Path, repo: str | None, tag: str = DEFAULT_TAG,
         return 2
 
     with tempfile.TemporaryDirectory() as tmp:
-        gz = Path(tmp) / ASSET
+        # The outgoing archive gets a directory to itself. `gh release
+        # download --dir X` writes the asset into X under its own name, so
+        # pointing it at the directory holding the freshly compressed database
+        # silently overwrites it, and the upload that follows sends the old
+        # bytes straight back. That turned every chained sweep slice into a
+        # no-op: four slices ran, ~25,000 names were checked, and the release
+        # still held a database with zero checks in it.
+        outgoing = Path(tmp) / "outgoing"
+        outgoing.mkdir()
+        gz = outgoing / ASSET
         size = compress(src, gz)
         if size < 1024:
             print(f"  refusing to push a {size} byte database -- that looks wrong")
@@ -88,11 +97,20 @@ def push(db_path: str | Path, repo: str | None, tag: str = DEFAULT_TAG,
         else:
             # Clobbering a rolling asset leaves no way back if a bad run wrote
             # a corrupt db. Keep exactly one previous copy alongside it.
-            prev = Path(tmp) / PREVIOUS
+            #
+            # A separate directory from `outgoing`, and no path comparison: the
+            # old guard was `(Path(tmp) / ASSET) != gz`, which compares a path
+            # to itself and is therefore always false. It never kept a previous
+            # copy, and it never stopped the download from clobbering the new
+            # archive either, because by then the damage was done.
+            incoming = Path(tmp) / "incoming"
+            incoming.mkdir()
             code, _ = _run(["gh", "release", "download", tag, "--pattern", ASSET,
-                            "--dir", tmp, "--clobber", *repo_args])
-            if code == 0 and (Path(tmp) / ASSET).exists() and (Path(tmp) / ASSET) != gz:
-                shutil.move(str(Path(tmp) / ASSET), str(prev))
+                            "--dir", str(incoming), "--clobber", *repo_args])
+            fetched = incoming / ASSET
+            if code == 0 and fetched.exists():
+                prev = incoming / PREVIOUS
+                shutil.move(str(fetched), str(prev))
                 _run(["gh", "release", "upload", tag, str(prev), "--clobber", *repo_args])
                 print(f"  previous database kept as {PREVIOUS}")
             print(f"  uploading to existing release {tag} ...")
